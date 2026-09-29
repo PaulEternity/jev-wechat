@@ -32,6 +32,8 @@ The names are the conventional ones you likely already export for other tools:
     ANTHROPIC_MODEL
 
     LLM_MODEL            shared model name, used when the per-provider one is absent
+
+    JEV_CHAT_APP         auto (default), wechat, or feishu; chooses the desktop client
 """
 
 from __future__ import annotations

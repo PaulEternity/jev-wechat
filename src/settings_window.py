@@ -58,9 +58,9 @@ class ModelSettingsWindow(NSObject):
         self._field('TYPESAFE_API_KEY', 'API Key', 451, secure=True)
         self.tests['TYPESAFE'] = self._button('测试 Jev', 415, 483, 121, 'testJev:')
         self.status['TYPESAFE'] = self._label('', 142, 515, 394, 42, 11)
-        self._label('测试仅发送固定测试句，不含微信聊天；可能产生少量 API 费用。\nKey 保存在这台 Mac 上。修改后保存并重启即可生效。',
+        self._label('测试仅发送固定测试句，不含聊天内容；可能产生少量 API 费用。\nKey 保存在这台 Mac 上。修改后保存并重启即可生效。',
                     24, 560, 512, 38, 11)
-        self.diagnostic = self._button('检查微信输入框', 24, 602, 170, 'diagnoseInput:')
+        self.diagnostic = self._button('检查聊天输入框', 24, 602, 170, 'diagnoseInput:')
         self.cancel = self._button('取消', 288, 602, 80, 'cancel:')
         self.save_button = self._button('保存并重启', 384, 602, 152, 'saveSettings:')
         self._reload()
@@ -148,7 +148,7 @@ class ModelSettingsWindow(NSObject):
     def modeChanged_(self, sender):
         preview = self.mode.indexOfSelectedItem() == 0
         self.mode_hint.setStringValue_('只识别聊天文字，不自动调用 GPT 或 Jev。' if preview else
-                                      '保存后，读到微信新消息会自动分析并生成；选好的回复由你发送。')
+                                      '保存后，读到聊天新消息会自动分析并生成；选好的回复由你发送。')
         self.mode_hint.setTextColor_(AppKit.NSColor.secondaryLabelColor())
 
     @objc.python_method

@@ -74,6 +74,7 @@ from judge import make_judge  # noqa: E402
 from generate import Generator, load_credentials  # noqa: E402
 import styles  # noqa: E402
 import fill  # noqa: E402
+import chat_apps  # noqa: E402
 
 BRAND_PREVIEW = "--brand-preview" in sys.argv
 READ_ONLY = model_settings.current()["JEV_READ_ONLY"] == "1"
@@ -276,7 +277,8 @@ class HudController(NSObject):
         self._last_risk = 0.0         # newest verdict's risk, for the overlay's highlight
         self._chat_title = ""
         self._asked_permission = False
-        self._win_wid = None          # sticky WeChat window id
+        self._win_wid = None          # sticky chat-window id
+        self._chat_app_key = ""        # client that supplied the current conversation
         self._last_origin = None      # last applied panel origin
         self._pending_origin = None   # candidate origin awaiting confirmation
         self._layouting = False
@@ -448,7 +450,7 @@ class HudController(NSObject):
         self.panel.setContentView_(self.scroll)
         self._title_h = self.panel.frame().size.height - PANEL_H   # measured, not assumed
         self._relayout()
-        self.rows["status"].setStringValue_("等待识别微信聊天…" if READ_ONLY else "等待微信消息…")
+        self.rows["status"].setStringValue_("等待识别聊天…" if READ_ONLY else "等待聊天消息…")
         self._relayout()
         self._wire_window_controls()
         self._install_status_item()
@@ -600,7 +602,7 @@ class HudController(NSObject):
             ("显示 / 收起面板", "collapsePanel:", ""),
             ("暂停读屏", "togglePause:", ""),
             ("YOLO 检测框", "toggleBoxes:", ""),
-            ("检查微信输入框", "diagnoseInput:", ""),
+            ("检查聊天输入框", "diagnoseInput:", ""),
             ("立即重新分析", "reanalyze:", ""),
         ):
             menu.addItemWithTitle_action_keyEquivalent_(title, action, key)
@@ -615,7 +617,7 @@ class HudController(NSObject):
 
     def diagnoseInput_(self, sender):
         self._view_revision += 1
-        result = fill.input_diagnostic()
+        result = fill.input_diagnostic(self._chat_app_key or None)
         _log("输入框检查 · " + result.replace("\n", " | "))
         self._render("status", result, PALETTE["amber"])
         self._paused = True
@@ -850,7 +852,7 @@ class HudController(NSObject):
         if not fill.has_accessibility():
             # First click is the moment to ask: the system dialog is the only way in.
             fill.request_accessibility()
-        ok, reason = fill.fill_text(text)
+        ok, reason = fill.fill_text(text, self._chat_app_key or None)
         if ok:
             self._render("status", "已填入", PALETTE["green"])
         else:
@@ -858,7 +860,8 @@ class HudController(NSObject):
                 pb = NSPasteboard.generalPasteboard()
                 pb.clearContents()
                 pb.setString_forType_(text, NSPasteboardTypeString)
-                self._render("status", "微信未开放输入框，已复制这条回复。点微信输入框后按 ⌘V 粘贴。", PALETTE["amber"])
+                label = chat_apps.label_for_key(self._chat_app_key)
+                self._render("status", f"{label}未开放输入框，已复制这条回复。点输入框后按 ⌘V 粘贴。", PALETTE["amber"])
             else:
                 self._render("status", f"填入失败：{reason}", PALETTE["red"])
         self._relayout()
@@ -1135,6 +1138,7 @@ class HudController(NSObject):
         # showed up as a visible jump after the verdict landed. Pushed on unchanged
         # frames too — the window can move while its pixels stay identical.
         self._win_wid = res["window"]["wid"]
+        self._chat_app_key = res.get("app") or res["window"].get("app", "")
         self._push("applyPosition:", res["window"])
         if res["unchanged"] and self._last_full is not None:
             # the settle/analyze gate below still runs every read; an unchanged frame
@@ -1142,7 +1146,7 @@ class HudController(NSObject):
             res = self._last_full
         else:
             self._last_full = res
-            self._push("applyChat:", res.get("chat_title") or "")
+            self._push("applyChat:", (res.get("chat_title") or "", self._chat_app_key))
 
         chat_identity = (res["window"]["wid"], res.get("chat_title") or "")
         if chat_identity != self._observed_chat:
@@ -1538,12 +1542,15 @@ class HudController(NSObject):
         self.performSelectorOnMainThread_withObject_waitUntilDone_(selector, payload, False)
 
     # --- main-thread callbacks (AppKit is not thread safe)
-    def applyChat_(self, title):
+    def applyChat_(self, payload):
+        """Render the conversation name with the client that supplied its OCR text."""
+        title, app_key = payload
         if title != self._chat_title:
             self._clear_candidates()
             self._stream_rows = {}
         self._chat_title = title
-        self._render("chat", title or ("当前微信聊天" if READ_ONLY else ""), PALETTE["green"])
+        label = chat_apps.label_for_key(app_key)
+        self._render("chat", title or (f"当前{label}聊天" if READ_ONLY else ""), PALETTE["green"])
         self._relayout()
 
     def applyReadOnly_(self, payload):

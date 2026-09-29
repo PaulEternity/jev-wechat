@@ -1,4 +1,4 @@
-"""One-click 「填入」: put a candidate reply straight into WeChat's input box.
+"""One-click 「填入」: put a candidate reply into a supported chat input box.
 
 Mechanism — the Accessibility API, not synthetic keystrokes:
     find WeChat's input box in the accessibility tree (the AXTextArea inside the window
@@ -36,14 +36,11 @@ import time
 
 import AppKit
 import ApplicationServices
+from chat_apps import ChatApp, app_for_key, configured_apps
 
-WECHAT_BUNDLE_ID = "com.tencent.xinWeChat"
-WECHAT_NAMES = ("微信", "WeChat")
-
-# WeChat owns two windows: a small untitled one and the chat window. The input box lives in
-# the latter, so it is searched first and the untitled window is only a fallback.
-CHAT_WINDOW_TITLE = "微信"
-INPUT_ROLE = "AXTextArea"
+# Electron and native clients expose either role.  The largest field still wins, preventing
+# a sidebar search field from being mistaken for the composer.
+INPUT_ROLES = ("AXTextArea", "AXTextField")
 # The chat window holds TWO text areas, and picking the wrong one writes the reply into
 # WeChat's sidebar search field (measured: search 127x23, message box 643x129). Size is the
 # only thing that separates them reliably, so the largest wins and anything smaller than
@@ -57,8 +54,8 @@ MAX_NODES = 2000
 # Reason strings are shown by the HUD in its status line, so they read as sentences.
 REASON_EMPTY = "没有可填入的内容"
 REASON_NO_ACCESS = "未授予辅助功能权限"
-REASON_NO_WECHAT = "没找到微信应用"
-REASON_NO_INPUT = "当前微信未向辅助功能开放聊天输入框"
+REASON_NO_CHAT_APP = "没找到目标聊天应用"
+REASON_NO_INPUT = "当前聊天应用未向辅助功能开放消息输入框"
 REASON_WRITE_FAILED = "写入输入框失败"
 REASON_NOT_VERIFIED = "写入后没读到内容，可能没填进去"
 REASON_BUSY = "上一次填入还没结束"
@@ -86,23 +83,29 @@ def request_accessibility() -> bool:
         return has_accessibility()
 
 
-def _wechat_app():
-    """The running WeChat: bundle id first, window-owner name as the fallback."""
+def _chat_app(app_key: str | None = None):
+    """Return the requested running chat app and its profile, bundle ID first."""
+    targets = (app_for_key(app_key),) if app_key else configured_apps()
     try:
-        apps = AppKit.NSRunningApplication.runningApplicationsWithBundleIdentifier_(
-            WECHAT_BUNDLE_ID)
-        if apps and len(apps) > 0:
-            return apps[0]
+        for target in targets:
+            if target is None:
+                continue
+            for bundle_id in target.bundle_ids:
+                apps = AppKit.NSRunningApplication.runningApplicationsWithBundleIdentifier_(bundle_id)
+                if apps and len(apps) > 0:
+                    return apps[0], target
     except Exception:
         pass
     try:
         for app in AppKit.NSWorkspace.sharedWorkspace().runningApplications():
             name = app.localizedName() or ""
-            if name in WECHAT_NAMES or app.bundleIdentifier() == WECHAT_BUNDLE_ID:
-                return app
+            bundle_id = app.bundleIdentifier() or ""
+            for target in targets:
+                if target is not None and (name in target.owner_names or bundle_id in target.bundle_ids):
+                    return app, target
     except Exception:
         pass
-    return None
+    return None, None
 
 
 def _ax_attr(element, name):
@@ -127,8 +130,8 @@ def _ax_size(element) -> tuple[float, float] | None:
         return None
 
 
-def _find_input_box(pid: int):
-    """WeChat's message input box, or None.
+def _find_input_box(pid: int, app: ChatApp):
+    """The selected client's largest message-sized accessibility input box, or None.
 
     Returns the LARGEST text area in the chat window, not the first one found: WeChat's
     accessibility tree contains both the sidebar search field and the message box, and the
@@ -147,7 +150,7 @@ def _find_input_box(pid: int):
     ordered = sorted(
         windows,
         key=lambda w: _ax_attr(w, ApplicationServices.kAXTitleAttribute)
-        != CHAT_WINDOW_TITLE)
+        not in app.window_title_hints)
 
     best, best_area = None, 0.0
     for window in ordered:
@@ -155,7 +158,7 @@ def _find_input_box(pid: int):
         while queue and seen < MAX_NODES:
             el = queue.pop(0)
             seen += 1
-            if _ax_attr(el, ApplicationServices.kAXRoleAttribute) == INPUT_ROLE:
+            if _ax_attr(el, ApplicationServices.kAXRoleAttribute) in INPUT_ROLES:
                 size = _ax_size(el)
                 area = size[0] * size[1] if size else 0.0
                 if area > best_area:
@@ -184,14 +187,14 @@ def _ax_set_value(box, text: str) -> bool:
 
 
 _FILL_LOCK = threading.Lock()
-_LAST_FILL: tuple[str, str, float] | None = None   # (text, box content after fill, ts)
+_LAST_FILL: tuple[str, str, str, float] | None = None   # (app key, text, box content, ts)
 # Short on purpose: it only has to swallow a double click. The content check below is what
 # decides, so a deliberate retry a moment later always goes through.
 DUPLICATE_WINDOW_S = 0.4
 
 
-def _duplicate_blocked(text: str, current: str,
-                       last: tuple[str, str, float] | None, now: float) -> bool:
+def _duplicate_blocked(app_key: str, text: str, current: str,
+                       last: tuple[str, str, str, float] | None, now: float) -> bool:
     """True when this call is the second half of one double click.
 
     Keyed on the input box's *content* rather than the clock alone: the same text is
@@ -206,14 +209,15 @@ def _duplicate_blocked(text: str, current: str,
     """
     if last is None:
         return False
-    last_text, last_content, last_ts = last
-    return (text == last_text
+    last_app, last_text, last_content, last_ts = last
+    return (app_key == last_app
+            and text == last_text
             and current == last_content
             and (now - last_ts) < DUPLICATE_WINDOW_S)
 
 
-def fill_text(text: str) -> tuple[bool, str]:
-    """Write `text` into WeChat's input box, appended to whatever is already typed there.
+def fill_text(text: str, app_key: str | None = None) -> tuple[bool, str]:
+    """Append `text` to one selected chat client's input box and verify the write.
 
     Returns (ok, reason). Appending keeps this equivalent to the paste it replaces: a paste
     lands at the caret, which is the end of the box once the user has been typing. Success
@@ -230,11 +234,11 @@ def fill_text(text: str) -> tuple[bool, str]:
         if not has_accessibility():
             return False, REASON_NO_ACCESS
 
-        app = _wechat_app()
-        if app is None:
-            return False, REASON_NO_WECHAT
+        app, target = _chat_app(app_key)
+        if app is None or target is None:
+            return False, REASON_NO_CHAT_APP
 
-        box = _find_input_box(app.processIdentifier())
+        box = _find_input_box(app.processIdentifier(), target)
         if box is None:
             return False, REASON_NO_INPUT
 
@@ -243,7 +247,7 @@ def fill_text(text: str) -> tuple[bool, str]:
             return False, REASON_NO_INPUT
 
         # checked before the write, so a refused repeat leaves the box untouched
-        if _duplicate_blocked(text, current, _LAST_FILL, time.monotonic()):
+        if _duplicate_blocked(target.key, text, current, _LAST_FILL, time.monotonic()):
             return False, REASON_DUPLICATE
 
         if not _ax_set_value(box, current + text):
@@ -254,7 +258,7 @@ def fill_text(text: str) -> tuple[bool, str]:
         landed = _ax_value(box)
         if landed is None or not landed.endswith(text):
             return False, REASON_NOT_VERIFIED
-        _LAST_FILL = (text, landed, time.monotonic())
+        _LAST_FILL = (target.key, text, landed, time.monotonic())
         return True, "已填入"
     finally:
         _FILL_LOCK.release()
@@ -264,9 +268,9 @@ if __name__ == "__main__":
     import sys
 
     print(f"辅助功能权限: {'已授予' if has_accessibility() else '未授予'}")
-    _app = _wechat_app()
+    _app, _target = _chat_app()
     if _app is None:
-        print("微信进程: 未找到")
+        print("聊天应用进程: 未找到")
     else:
         print(f"微信进程: {_app.localizedName()} ({_app.bundleIdentifier()})")
         if has_accessibility():
@@ -276,18 +280,18 @@ if __name__ == "__main__":
         print(f"填入结果: {fill_text(sys.argv[1])}")
 
 
-def input_diagnostic() -> str:
+def input_diagnostic(app_key: str | None = None) -> str:
     """Report permission, version and AX structure only; never read or log chat text."""
     from collections import Counter, deque
-    app = _wechat_app()
-    if app is None:
-        return REASON_NO_WECHAT
+    app, target = _chat_app(app_key)
+    if app is None or target is None:
+        return REASON_NO_CHAT_APP
     bundle = AppKit.NSBundle.bundleWithURL_(app.bundleURL())
     info = bundle.infoDictionary() if bundle else {}
     version = str(info.get('CFBundleShortVersionString', '?'))
     build = str(info.get('CFBundleVersion', '?'))
     if not has_accessibility():
-        return f'微信 {version}（{build}） · 未授予本应用辅助功能权限。'
+        return f'{target.label} {version}（{build}） · 未授予本应用辅助功能权限。'
     root = ApplicationServices.AXUIElementCreateApplication(app.processIdentifier())
     windows = _ax_attr(root, ApplicationServices.kAXWindowsAttribute) or []
     queue, roles, errors, visited = deque(windows), Counter(), Counter(), 0
@@ -305,10 +309,10 @@ def input_diagnostic() -> str:
         except Exception:
             errors['exception'] += 1
     fields = roles['AXTextArea'] + roles['AXTextField']
-    found = _find_input_box(app.processIdentifier()) is not None
+    found = _find_input_box(app.processIdentifier(), target) is not None
     detail = '；'.join(f'{role} × {count}' for role, count in sorted(roles.items()))
-    return (f'微信 {version}（{build}） · 辅助功能已授权\n'
+    return (f'{target.label} {version}（{build}） · 辅助功能已授权\n'
             f'窗口 {len(windows)} 个，读取控件 {visited} 个，文本输入控件 {fields} 个。\n'
             f'{detail}\n'
-            + ('原版定位逻辑已找到输入框。' if found else '原版定位逻辑未找到输入框。')
+            + ('已找到消息输入框。' if found else '未找到消息输入框。')
             + (f'\n子节点读取错误：{dict(errors)}' if errors else ''))

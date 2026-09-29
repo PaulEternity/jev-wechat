@@ -1,4 +1,4 @@
-"""Perception layer: find WeChat's window, capture it, OCR it, extract the conversation.
+"""Perception layer: find a supported chat window, capture it, OCR it, extract messages.
 
 Validated facts this module is built on (probed 2026-09-21 on WeChat 4.1 Mac):
   * `screencapture -l <windowid>` returns real content even when WeChat is not frontmost,
@@ -19,6 +19,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import Quartz
+
+from chat_apps import ChatApp, app_for_owner, configured_apps
 
 # --- layout constants (normalized 0..1 within the window; tuned on the probe data) ---
 CHAT_PANE_X_MIN = 0.32
@@ -74,8 +76,11 @@ class Message:
 
 @dataclass
 class WindowInfo:
+    """One eligible chat window plus the client that owns it."""
+
     wid: int
     pid: int
+    app: ChatApp
     title: str
     x: float
     y: float
@@ -90,7 +95,7 @@ def screen_capture_ok() -> bool:
     """False when macOS has not granted Screen Recording to this app.
 
     Worth checking explicitly: without the grant macOS silently hides every window's
-    title, so find_wechat_window() would just report "not found" and the user would see
+    title, so find_chat_window() would just report "not found" and the user would see
     the panel disappear for no stated reason.
     """
     try:
@@ -107,20 +112,28 @@ def request_screen_capture() -> bool:
         return False
 
 
-def find_wechat_window(previous_wid: int | None = None) -> WindowInfo | None:
-    """Largest titled WeChat window (the main one). Independent of window order."""
+def find_chat_window(previous_wid: int | None = None) -> WindowInfo | None:
+    """Find the configured chat client's main window, retaining a previous choice.
+
+    In ``auto`` mode Quartz's front-to-back order breaks ties between WeChat and Feishu;
+    ``JEV_CHAT_APP=wechat`` or ``feishu`` pins the target when both are open.
+    """
     opts = Quartz.kCGWindowListOptionAll | Quartz.kCGWindowListExcludeDesktopElements
     wins = Quartz.CGWindowListCopyWindowInfo(opts, Quartz.kCGNullWindowID)
+    allowed = configured_apps()
     best: WindowInfo | None = None
-    for w in wins:
+    best_rank: tuple[int, float, int] | None = None
+    for z_order, w in enumerate(wins):
         owner = w.get("kCGWindowOwnerName") or ""
-        if "WeChat" not in owner and "微信" not in owner:
+        app = app_for_owner(owner, allowed)
+        if app is None:
             continue
         title = w.get("kCGWindowName") or ""
         b = dict(w.get("kCGWindowBounds") or {})
         wi = WindowInfo(
             wid=int(w.get("kCGWindowNumber") or 0),
             pid=int(w.get("kCGWindowOwnerPID") or 0),
+            app=app,
             title=title,
             x=float(b.get("X", 0)), y=float(b.get("Y", 0)),
             w=float(b.get("Width", 0)), h=float(b.get("Height", 0)),
@@ -129,15 +142,18 @@ def find_wechat_window(previous_wid: int | None = None) -> WindowInfo | None:
         if not title or wi.w < 600 or wi.h < 400:
             continue
         # only a titled, window-sized window can be the main chat window
-        if best is None or (wi.w * wi.h, wi.wid) > (best.w * best.h, best.wid):
+        rank = (z_order, -(wi.w * wi.h), -wi.wid)
+        if best_rank is None or rank < best_rank:
             best = wi
+            best_rank = rank
 
-    # stick with the window we already chose: WeChat 4.x keeps several equally-sized
-    # windows around, and re-picking each tick let the target jump between them
+    # Stick with the window we already chose: both clients can keep several equally-sized
+    # windows around, and re-picking each tick lets the target jump between them.
     if previous_wid is not None and best is not None and best.wid != previous_wid:
         for w in wins:
             owner = w.get("kCGWindowOwnerName") or ""
-            if "WeChat" not in owner and "微信" not in owner:
+            app = app_for_owner(owner, allowed)
+            if app is None:
                 continue
             if int(w.get("kCGWindowNumber") or 0) != previous_wid:
                 continue
@@ -147,6 +163,7 @@ def find_wechat_window(previous_wid: int | None = None) -> WindowInfo | None:
             ph = float(b.get("Height", 0))
             if title and pw >= 600 and ph >= 400:
                 return WindowInfo(wid=previous_wid, pid=int(w.get("kCGWindowOwnerPID") or 0),
+                                  app=app,
                                   title=title, x=float(b.get("X", 0)), y=float(b.get("Y", 0)),
                                   w=pw, h=ph)
     return best
@@ -513,16 +530,17 @@ def read_conversation(max_messages: int = 12, previous_wid: int | None = None,
     slower read stays visible instead of silently skipping).
     """
     t0 = time.perf_counter()
-    win = find_wechat_window(previous_wid)
+    win = find_chat_window(previous_wid)
     if win is None:
-        return {"ok": False, "error": "WeChat main window not found", "messages": []}
+        return {"ok": False, "error": "未找到微信或飞书主窗口", "messages": []}
 
     # In-process capture + OCR off the CGImage is the fast path (~250 ms for the pair).
     # The subprocess + PNG route stays as the fallback: it is ~150 ms slower, but it is the
     # one that still worked when CGWindowListCreateImage had nothing to give.
     image = capture_image(win.wid)
     fingerprint = _fingerprint(image) if image is not None else None
-    window = {"wid": win.wid, "title": win.title, "w": win.w, "h": win.h,
+    window = {"wid": win.wid, "title": win.title, "app": win.app.key,
+              "app_label": win.app.label, "w": win.w, "h": win.h,
               "x": win.x, "y": win.y}
     if _same_frame(fingerprint, prev_fingerprint):
         total = (time.perf_counter() - t0) * 1000
@@ -538,7 +556,7 @@ def read_conversation(max_messages: int = 12, previous_wid: int | None = None,
         t_ocr = time.perf_counter()
     else:
         with tempfile.TemporaryDirectory() as td:
-            png = Path(td) / "wechat.png"
+            png = Path(td) / "chat.png"
             if not capture_window(win.wid, png):
                 return {"ok": False, "error": "capture failed", "messages": []}
             t_cap = time.perf_counter()
@@ -554,6 +572,7 @@ def read_conversation(max_messages: int = 12, previous_wid: int | None = None,
         "ok": True,
         "unchanged": False,
         "chat_title": chat_title,
+        "app": win.app.key,
         "window": window,
         "messages": msgs,
         "timing_ms": {"capture": (t_cap - t0) * 1000, "ocr": (t_ocr - t_cap) * 1000,

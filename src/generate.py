@@ -143,7 +143,7 @@ THINKING_ONLY_HINT = ("{model}：仅返回思考，未生成回复正文；"
 # could send as-is and the second is where the persona gets to breathe. Measured on the
 # built-in tones: 卑微乙方's pair goes from two polite apologies to "收到收到…" plus
 # "您息怒我马上跪着改完给您磕头了", and 贴吧老哥 picks up "我自己看了都想删号".
-PROMPT_ONE = """刚收到一条微信消息，你要帮我回。
+PROMPT_ONE = """刚收到一条即时消息，你要帮我回。
 
 {context_line}消息：「{message}」
 {intent_line}
@@ -154,7 +154,7 @@ PROMPT_ONE = """刚收到一条微信消息，你要帮我回。
 - 以聊天原文为准，话术只改变语气，不能改变话题或编造任务、时间、经历
 - 意图判断可能出错；若与原话不符，按原话回复。不相关的场景话术忽略其场景要求
 - 前一条稳妥、可以直接发出去；后一条把这个语气做足，更皮、更夸张一点也行
-- 每条不超过 30 个字，是微信里打字的语气，不要客套话、不要解释
+- 每条不超过 30 个字，是即时聊天里打字的语气，不要客套话、不要解释
 - 只输出 {n} 行，每行一条，不要编号、不要引号、不要任何前后缀
 - 不要写出语气名称（不要写「{tone}：」这类前缀），直接从回复内容开始"""
 

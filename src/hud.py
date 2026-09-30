@@ -606,14 +606,59 @@ class HudController(NSObject):
             ("立即重新分析", "reanalyze:", ""),
         ):
             menu.addItemWithTitle_action_keyEquivalent_(title, action, key)
+        # The client choice lives beside the helper's other immediate controls, not in model setup.
+        app_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("识别应用", None, "")
+        self._chat_app_menu = AppKit.NSMenu.alloc().init()
+        app_item.setSubmenu_(self._chat_app_menu)
+        menu.insertItem_atIndex_(app_item, 1)
+        self._refresh_chat_app_menu()
         menu.addItem_(AppKit.NSMenuItem.separatorItem())
         menu.addItemWithTitle_action_keyEquivalent_(f"退出 {brand.APP_NAME}", "quitApp:", "q")
         for item in menu.itemArray():
             item.setTarget_(self)
-        self.pause_item = menu.itemArray()[2]
-        self.boxes_item = menu.itemArray()[3]
+        # The client submenu is index 1, so the existing pause/box items shift by one.
+        self.pause_item = menu.itemArray()[3]
+        self.boxes_item = menu.itemArray()[4]
         self.boxes_item.setState_(AppKit.NSOnState if self._show_boxes else AppKit.NSOffState)
         self.status_item.setMenu_(menu)
+
+    @objc.python_method
+    def _configured_chat_app_key(self):
+        """Return the normalized client key that the menu should display as selected."""
+        raw = userconfig.get("JEV_CHAT_APP").strip().lower()
+        app = chat_apps.app_for_key(raw)
+        return app.key if raw != "auto" and app is not None else "auto"
+
+    @objc.python_method
+    def _refresh_chat_app_menu(self):
+        """Rebuild the three native menu choices so the active client has a checkmark."""
+        selected = self._configured_chat_app_key()
+        self._chat_app_menu.removeAllItems()
+        for key, title in (("auto", "自动识别（微信 / 飞书）"), ("wechat", "微信"), ("feishu", "飞书")):
+            item = self._chat_app_menu.addItemWithTitle_action_keyEquivalent_(title, "selectChatApp:", "")
+            item.setRepresentedObject_(key)
+            item.setTarget_(self)
+            item.setState_(AppKit.NSOnState if key == selected else AppKit.NSOffState)
+
+    def selectChatApp_(self, sender):
+        """Persist one menu selection and force the next poll to discover its matching window."""
+        key = str(sender.representedObject())
+        if key not in ("auto", "wechat", "feishu") or key == self._configured_chat_app_key():
+            return
+        values = model_settings.current()
+        values["JEV_CHAT_APP"] = key
+        try:
+            model_settings.save(values)
+        except (OSError, ValueError) as error:
+            _log(f"保存识别应用失败: {type(error).__name__}")
+            return
+        # userconfig prioritizes the process environment, so update it before the next poll.
+        os.environ["JEV_CHAT_APP"] = key
+        self._win_wid = self._fingerprint = self._last_full = self._observed_chat = None
+        self._next_read_ts = 0.0
+        self._chat_app_key = ""
+        self._refresh_chat_app_menu()
+        _log("识别应用已切换为 " + ("自动" if key == "auto" else chat_apps.label_for_key(key)))
 
     def diagnoseInput_(self, sender):
         self._view_revision += 1

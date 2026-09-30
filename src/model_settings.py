@@ -13,10 +13,11 @@ from urllib.parse import urlsplit
 import userconfig
 
 KEYS = ('OPENAI_BASE_URL', 'OPENAI_MODEL', 'OPENAI_API_KEY', 'OPENAI_API_FORMAT',
-        'TYPESAFE_BASE_URL', 'TYPESAFE_MODEL', 'TYPESAFE_API_KEY', 'JEV_READ_ONLY')
+        'TYPESAFE_BASE_URL', 'TYPESAFE_MODEL', 'TYPESAFE_API_KEY', 'JEV_READ_ONLY',
+        'JEV_CHAT_APP')
 DEFAULTS = {'OPENAI_BASE_URL': 'https://api.openai.com/v1', 'OPENAI_MODEL': '',
             'OPENAI_API_FORMAT': 'responses', 'TYPESAFE_BASE_URL': 'https://api.typesafe.ai',
-            'TYPESAFE_MODEL': 'jev-latest', 'JEV_READ_ONLY': '1'}
+            'TYPESAFE_MODEL': 'jev-latest', 'JEV_READ_ONLY': '1', 'JEV_CHAT_APP': 'auto'}
 
 
 def current() -> dict[str, str]:
@@ -46,6 +47,9 @@ def validate(values: dict[str, str], provider: str | None = None) -> None:
                     raise ValueError(f'请填写 {label} 的{name}。')
     if values.get('OPENAI_API_FORMAT', 'responses') not in ('responses', 'openai'):
         raise ValueError('请选择 Responses 或 Chat Completions。')
+    # Keep persisted choices aligned with the desktop-client profiles used by capture.
+    if values.get('JEV_CHAT_APP', 'auto') not in ('auto', 'wechat', 'feishu'):
+        raise ValueError('识别应用请选择自动、微信或飞书。')
 
 
 def save(values: dict[str, str], path: Path | None = None) -> None:

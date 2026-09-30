@@ -58,8 +58,7 @@ class ModelSettingsWindow(NSObject):
         self._field('TYPESAFE_API_KEY', 'API Key', 451, secure=True)
         self.tests['TYPESAFE'] = self._button('测试 Jev', 415, 483, 121, 'testJev:')
         self.status['TYPESAFE'] = self._label('', 142, 515, 394, 42, 11)
-        self._label('测试仅发送固定测试句，不含聊天内容；可能产生少量 API 费用。\nKey 保存在这台 Mac 上。修改后保存并重启即可生效。',
-                    24, 560, 512, 38, 11)
+        self._label('识别应用请在菜单栏“哑巴”图标中切换。', 24, 565, 512, 25, 11)
         self.diagnostic = self._button('检查聊天输入框', 24, 602, 170, 'diagnoseInput:')
         self.cancel = self._button('取消', 288, 602, 80, 'cancel:')
         self.save_button = self._button('保存并重启', 384, 602, 152, 'saveSettings:')
@@ -123,6 +122,8 @@ class ModelSettingsWindow(NSObject):
         values = {key: str(field.stringValue()).strip() for key, field in self.fields.items()}
         values['OPENAI_API_FORMAT'] = 'responses' if self.api.indexOfSelectedItem() == 0 else 'openai'
         values['JEV_READ_ONLY'] = '1' if self.mode.indexOfSelectedItem() == 0 else '0'
+        # Preserve the app choice managed by the menu-bar controller.
+        values['JEV_CHAT_APP'] = model_settings.current()['JEV_CHAT_APP']
         return values
 
     @objc.python_method

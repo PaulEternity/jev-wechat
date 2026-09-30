@@ -63,6 +63,15 @@ class SettingsContracts(unittest.TestCase):
         with self.assertRaises(ValueError):
             settings.validate(values)
 
+    def test_chat_app_choice_round_trips_and_rejects_unknown_clients(self):
+        """The menu bar may persist only the clients supported by the capture layer."""
+        values = form()
+        values['JEV_CHAT_APP'] = 'feishu'
+        settings.validate(values)
+        values['JEV_CHAT_APP'] = 'unsupported-client'
+        with self.assertRaises(ValueError):
+            settings.validate(values)
+
     def test_rejects_unsafe_config_and_credential_bearing_urls(self):
         for key, value in [('OPENAI_API_KEY', "a'\nb"),
                            ('OPENAI_BASE_URL', 'https://user:secret@example.com'),

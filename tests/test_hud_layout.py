@@ -87,6 +87,14 @@ class ScrollablePanel(unittest.TestCase):
         self.assertFalse(any(c.cand_texts))
         self.assertTrue(c._rows[0][0]['fill_btn'].isHidden())
 
+    def test_status_menu_exposes_the_chat_app_switcher(self):
+        """The helper icon, rather than model settings, owns immediate client switching."""
+        menu = self.controller.status_item.menu()
+        app_item = menu.itemAtIndex_(1)
+        self.assertEqual(str(app_item.title()), '识别应用')
+        self.assertEqual([str(item.title()) for item in app_item.submenu().itemArray()],
+                         ['自动识别（微信 / 飞书）', '微信', '飞书'])
+
     def test_missing_input_copies_candidate_and_never_claims_inserted(self):
         c = self.controller
         c.cand_texts[0] = '这是合成测试文字'
